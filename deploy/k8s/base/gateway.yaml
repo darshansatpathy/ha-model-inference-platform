@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-routing
+  labels: {app.kubernetes.io/name: gateway}
+data:
+  # Changed by the rollout controller. The gateway reloads it without restarting.
+  routing.yaml: |
+    stable: {url: "http://model-stable:8080"}
+    canary: {url: "http://model-canary:8080"}
+    canary_weight: 0
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels: {app.kubernetes.io/name: gateway}
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: {app.kubernetes.io/name: gateway}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: gateway}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: gateway
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: gateway}
+      containers:
+        - name: gateway
+          image: ifp
+          args: ["gateway"]
+          ports: [{name: http, containerPort: 8080}]
+          env:
+            - {name: ROUTING_FILE, value: /etc/gateway/routing.yaml}
+            - {name: UPSTREAM_TIMEOUT_SECONDS, value: "2"}
+          volumeMounts:
+            # A directory mount, not subPath, so ConfigMap updates reach the running pod.
+            - {name: routing, mountPath: /etc/gateway, readOnly: true}
+          resources:
+            requests: {cpu: 200m, memory: 128Mi}
+            limits: {memory: 256Mi}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec: {command: ["sleep", "5"]}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+      volumes:
+        - name: routing
+          configMap: {name: gateway-routing}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels: {app.kubernetes.io/name: gateway}
+spec:
+  selector: {app.kubernetes.io/name: gateway}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: gateway}

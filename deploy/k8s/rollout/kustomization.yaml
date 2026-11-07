@@ -1,0 +1,11 @@
+# The rollout controller as a Job: apply it after updating the canary Deployment.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: inference
+resources:
+  - rbac.yaml
+  - job.yaml
+images:
+  - name: ifp
+    newName: ghcr.io/darshansatpathy/ha-model-inference-platform
+    newTag: 0.1.0

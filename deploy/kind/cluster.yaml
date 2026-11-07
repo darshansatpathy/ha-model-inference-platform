@@ -1,0 +1,10 @@
+# kind cluster for the end-to-end test. A short kubelet sync period makes ConfigMap changes
+# (the canary weight) reach the gateway in seconds rather than a minute.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: KubeletConfiguration
+        syncFrequency: 10s
