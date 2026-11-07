@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROMETHEUS_VERSION: "3.5.0"
+  KUBECONFORM_VERSION: "0.7.0"
+
+jobs:
+  test:
+    name: Lint, types, rule tests, drills (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: promtool
+        run: |
+          curl -sSL "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" \
+            | tar xz -C /tmp
+          sudo mv "/tmp/prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool" /usr/local/bin/
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy
+      - name: Rules and dashboards match slo/slo.yaml
+        run: ifp generate --check
+      - name: promtool checks and unit tests for every alert
+        run: |
+          promtool check rules slo/rules.yaml
+          promtool test rules slo/tests.yaml
+      - name: Tests, including canary drills and a backend killed under load
+        run: pytest --cov --cov-report=term-missing --cov-fail-under=90
+
+  manifests:
+    name: Kubernetes manifests validate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: kubeconform
+        run: |
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz -C /tmp
+          for dir in base overlays/kind overlays/production rollout monitoring; do
+            echo "== $dir"
+            kubectl kustomize "deploy/k8s/$dir" | /tmp/kubeconform -strict -summary -kubernetes-version 1.33.0 \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' -
+          done
+
+  image:
+    name: Image builds, runs as non-root on a read-only filesystem
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: docker build -t ifp:ci .
+      - name: Stable, canary and gateway containers serve traffic
+        run: |
+          pip install -e .
+          docker network create ifp
+          for v in v1 v2; do
+            docker run -d --name "model-$v" --network ifp --read-only --cap-drop ALL -e MODEL_VERSION=$v ifp:ci
+          done
+          mkdir -p /tmp/gw
+          printf 'stable: {url: "http://model-v1:8080"}\ncanary: {url: "http://model-v2:8080"}\ncanary_weight: 25\n' > /tmp/gw/routing.yaml
+          docker run -d --name gateway --network ifp --read-only --cap-drop ALL -p 18080:8080 \
+            -v /tmp/gw:/etc/gateway:ro -e ROUTING_FILE=/etc/gateway/routing.yaml ifp:ci gateway
+          for i in $(seq 1 30); do curl -fsS localhost:18080/readyz && break; sleep 1; done
+          test "$(docker exec model-v1 id -u)" = "10001"
+          ifp load --url http://127.0.0.1:18080 --rate 100 --seconds 10 --max-error-rate 0 --max-p95-ms 300
+      - if: failure()
+        run: for c in model-v1 model-v2 gateway; do docker logs "$c"; done
+
+  e2e-kind:
+    name: End to end on kind (deploy, rollback, promote, rolling restart)
+    runs-on: ubuntu-24.04
+    needs: [test, manifests]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: ifp
+          config: deploy/kind/cluster.yaml
+      - run: docker build -t ifp:e2e . && kind load docker-image ifp:e2e --name ifp
+      - run: scripts/e2e-kind.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-logs
+          path: e2e-logs/
+
+  drills:
+    name: Canary drills report
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+      - run: |
+          ifp drill --report canary-drills.md
+          cat canary-drills.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: canary-drills
+          path: canary-drills.md
+
+  package:
+    name: Wheel builds and installs
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install build && python -m build
+      - run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install dist/*.whl
+          cd /tmp && /tmp/venv/bin/ifp --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e . pip-audit
+      - run: pip-audit --skip-editable
