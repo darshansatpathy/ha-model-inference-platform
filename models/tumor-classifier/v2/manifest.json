@@ -1,0 +1,10 @@
+{
+ "file": "model.json",
+ "metrics": {
+  "test_accuracy": 0.972,
+  "test_auc": 0.9962
+ },
+ "name": "tumor-classifier",
+ "sha256": "2349328d877c72e38d4beac339a018e9d1749b16db042f6cdb76a42c3dceef80",
+ "version": "v2"
+}

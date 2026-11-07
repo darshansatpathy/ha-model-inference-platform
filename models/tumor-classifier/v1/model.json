@@ -1,0 +1,63 @@
+{
+ "features": [
+  "mean_radius",
+  "mean_texture",
+  "mean_perimeter",
+  "mean_area",
+  "mean_smoothness",
+  "mean_compactness",
+  "mean_concavity",
+  "mean_concave_points",
+  "mean_symmetry",
+  "mean_fractal_dimension"
+ ],
+ "intercept": -0.5946386266,
+ "mean": [
+  14.1959037559,
+  19.2771596244,
+  92.4075117371,
+  661.8180751174,
+  0.0964264085,
+  0.104558662,
+  0.089321734,
+  0.0493566174,
+  0.1809983568,
+  0.0626871596
+ ],
+ "metrics": {
+  "test_accuracy": 0.9371,
+  "test_auc": 0.9816
+ },
+ "name": "tumor-classifier",
+ "scale": [
+  3.5578840164,
+  4.346491668,
+  24.4839640901,
+  359.5874041163,
+  0.0141952441,
+  0.0529545209,
+  0.0804793734,
+  0.0389383388,
+  0.0274297904,
+  0.007091165
+ ],
+ "threshold": 0.5,
+ "training": {
+  "dataset": "Breast Cancer Wisconsin (Diagnostic), UCI, CC BY 4.0",
+  "rows": 426,
+  "seed": 7
+ },
+ "version": "v1",
+ "weights": [
+  0.9874139544,
+  1.069625354,
+  0.9478799894,
+  0.9725143658,
+  0.699193009,
+  0.041622963,
+  0.9509746844,
+  1.3934824835,
+  0.3244387507,
+  -0.4031148426
+ ]
+}
