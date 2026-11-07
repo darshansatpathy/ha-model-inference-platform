@@ -1,0 +1,165 @@
+# promtool unit tests for the generated rules: `promtool test rules slo/tests.yaml`.
+# Series advance once a minute; values are cumulative request counts. Expected alerts include
+# their rendered annotations, so the templates are tested too.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+
+tests:
+  - name: a 2% error rate pages within three minutes (budget 0.1%, fast burn threshold 1.44%)
+    interval: 1m
+    input_series:
+      - series: 'gateway_requests_total{route="stable",code="200"}'
+        values: '0+980x120'
+      - series: 'gateway_requests_total{route="stable",code="500"}'
+        values: '0+20x120'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AvailabilityErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: AvailabilityErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels: {severity: page, service: inference, slo: availability}
+            exp_annotations: &availability_fast
+              summary: availability SLO is burning its error budget fast
+              description: >-
+                Prediction requests answered without a server error or a gateway failure. Objective 99.900% over 30 days.
+                At the current rate the budget runs out in hours: error ratio over 1h is 2%.
+              runbook_url: https://github.com/darshansatpathy/ha-model-inference-platform/blob/main/docs/runbooks.md#availability-error-budget-burn
+      - eval_time: 10m
+        alertname: AvailabilityErrorBudgetBurnSlow
+        exp_alerts: []
+
+  - name: a healthy service raises nothing, and spending at half the allowed rate leaves half the budget
+    interval: 1m
+    input_series:
+      - series: 'gateway_requests_total{route="stable",code="200"}'
+        values: '0+9995x240'
+      - series: 'gateway_requests_total{route="stable",code="500"}'
+        values: '0+5x240'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: AvailabilityErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 4h
+        alertname: AvailabilityErrorBudgetBurnSlow
+        exp_alerts: []
+    promql_expr_test:
+      - expr: slo:error_budget_remaining:ratio{slo="availability"}
+        eval_time: 4h
+        exp_samples:
+          - labels: 'slo:error_budget_remaining:ratio{service="inference",slo="availability"}'
+            value: 0.5
+
+  - name: a 0.4% error rate opens a ticket but does not page (slow burn, more than 3x over a day)
+    interval: 1m
+    input_series:
+      - series: 'gateway_requests_total{route="stable",code="200"}'
+        values: '0+996x240'
+      - series: 'gateway_requests_total{route="stable",code="503"}'
+        values: '0+4x240'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: AvailabilityErrorBudgetBurnSlow
+        exp_alerts:
+          - exp_labels: {severity: ticket, service: inference, slo: availability}
+            exp_annotations:
+              summary: availability SLO is burning its error budget steadily
+              description: >-
+                Prediction requests answered without a server error or a gateway failure. Objective 99.900% over 30 days.
+                At the current rate the budget runs out in days: error ratio over 1h is 0.4%.
+              runbook_url: https://github.com/darshansatpathy/ha-model-inference-platform/blob/main/docs/runbooks.md#availability-error-budget-burn
+      - eval_time: 3h
+        alertname: AvailabilityErrorBudgetBurnFast
+        exp_alerts: []
+
+  - name: the page resolves within 30 minutes of the errors stopping (short windows)
+    interval: 1m
+    input_series:
+      - series: 'gateway_requests_total{route="stable",code="200"}'
+        values: '0+980x30 29400+1000x60'
+      - series: 'gateway_requests_total{route="stable",code="500"}'
+        values: '0+20x30 600+0x60'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: AvailabilityErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels: {severity: page, service: inference, slo: availability}
+            exp_annotations: *availability_fast
+      - eval_time: 60m
+        alertname: AvailabilityErrorBudgetBurnFast
+        exp_alerts: []
+
+  - name: 20% of requests slower than 300 ms pages on the latency SLO (budget 1%)
+    interval: 1m
+    input_series:
+      - series: 'gateway_request_duration_seconds_bucket{le="0.3"}'
+        values: '0+800x120'
+      - series: 'gateway_request_duration_seconds_count'
+        values: '0+1000x120'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LatencyErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels: {severity: page, service: inference, slo: latency}
+            exp_annotations:
+              summary: latency SLO is burning its error budget fast
+              description: >-
+                Prediction requests answered within 300 ms at the gateway. Objective 99.000% over 30 days.
+                At the current rate the budget runs out in hours: error ratio over 1h is 20%.
+              runbook_url: https://github.com/darshansatpathy/ha-model-inference-platform/blob/main/docs/runbooks.md#latency-error-budget-burn
+
+  - name: a failing canary pages, and so does an open circuit
+    interval: 1m
+    input_series:
+      - series: 'gateway_upstream_requests_total{backend="canary",code="200"}'
+        values: '0+570x30'
+      - series: 'gateway_upstream_requests_total{backend="canary",code="500"}'
+        values: '0+30x30'
+      - series: 'gateway_circuit_open{backend="canary"}'
+        values: '0 0 0 1x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: InferenceCanaryErrorsHigh
+        exp_alerts:
+          - exp_labels: {severity: page, service: inference}
+            exp_annotations:
+              summary: The canary is failing more than 2% of its requests
+              description: Set the canary weight to 0 (the rollout controller does this on its own when it is running).
+              runbook_url: https://github.com/darshansatpathy/ha-model-inference-platform/blob/main/docs/runbooks.md#canary-errors
+      - eval_time: 10m
+        alertname: GatewayCircuitOpen
+        exp_alerts:
+          - exp_labels: {severity: page, service: inference, backend: canary}
+            exp_annotations:
+              summary: The gateway has stopped sending traffic to a backend
+              description: The canary backend failed repeatedly; its traffic goes to the other backend.
+              runbook_url: https://github.com/darshansatpathy/ha-model-inference-platform/blob/main/docs/runbooks.md#circuit-open
+
+  - name: sustained load shedding and saturation open tickets
+    interval: 1m
+    input_series:
+      - series: 'inference_rejected_total{version="v2",reason="overload",pod="a"}'
+        values: '0+30x30'
+      - series: 'inference_inflight_requests{version="v2",pod="a"}'
+        values: '60x30'
+      - series: 'inference_max_inflight{version="v2",pod="a"}'
+        values: '64x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: InferenceLoadShedding
+        exp_alerts:
+          - exp_labels: {severity: ticket, service: inference, version: v2}
+            exp_annotations:
+              summary: Model servers are refusing requests at their concurrency limit
+              description: 'Version v2 sheds load: the autoscaler is behind or at its maximum.'
+              runbook_url: https://github.com/darshansatpathy/ha-model-inference-platform/blob/main/docs/runbooks.md#load-shedding
+      - eval_time: 20m
+        alertname: InferenceSaturated
+        exp_alerts:
+          - exp_labels: {severity: ticket, service: inference, version: v2}
+            exp_annotations:
+              summary: Model servers are above 80% of their concurrency limit
+              description: Version v2 runs close to its admission limit for 10 minutes.
+              runbook_url: https://github.com/darshansatpathy/ha-model-inference-platform/blob/main/docs/runbooks.md#saturation

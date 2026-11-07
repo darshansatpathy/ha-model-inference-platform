@@ -1,0 +1,22 @@
+# Service level objectives for the inference platform, measured at the gateway (what callers see).
+# `ifp generate` turns this into recording rules, multi-window multi-burn-rate alerts and the SLO
+# dashboard. Budgets are over a rolling 30 days.
+service: inference
+window_days: 30
+objectives:
+  - name: availability
+    description: Prediction requests answered without a server error or a gateway failure.
+    objective: 0.999
+    error_ratio: >-
+      sum(rate(gateway_requests_total{code=~"5..|error"}[{w}]))
+      /
+      sum(rate(gateway_requests_total[{w}]))
+  - name: latency
+    description: Prediction requests answered within 300 ms at the gateway.
+    objective: 0.99
+    error_ratio: >-
+      1 - (
+        sum(rate(gateway_request_duration_seconds_bucket{le="0.3"}[{w}]))
+        /
+        sum(rate(gateway_request_duration_seconds_count[{w}]))
+      )

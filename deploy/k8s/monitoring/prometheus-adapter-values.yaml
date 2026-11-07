@@ -1,0 +1,14 @@
+# Helm values for prometheus-community/prometheus-adapter: serves the model servers' in-flight
+# requests to the HorizontalPodAutoscaler as the Pods metric `inference_inflight_requests`.
+rules:
+  default: false
+  custom:
+    - seriesQuery: 'inference_inflight_requests{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: namespace}
+          pod: {resource: pod}
+      name:
+        matches: "^inference_inflight_requests$"
+        as: "inference_inflight_requests"
+      metricsQuery: 'avg_over_time(inference_inflight_requests{<<.LabelMatchers>>}[1m])'
