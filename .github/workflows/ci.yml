@@ -108,7 +108,7 @@ jobs:
           config: deploy/kind/cluster.yaml
       - run: docker build -t ifp:e2e . && kind load docker-image ifp:e2e --name ifp
       - run: scripts/e2e-kind.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: e2e-logs
@@ -127,7 +127,7 @@ jobs:
       - run: |
           ifp drill --report canary-drills.md
           cat canary-drills.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: canary-drills
@@ -146,7 +146,7 @@ jobs:
           python -m venv /tmp/venv
           /tmp/venv/bin/pip install dist/*.whl
           cd /tmp && /tmp/venv/bin/ifp --version
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
