@@ -132,6 +132,18 @@ def test_routing_reloads_and_bad_documents_keep_the_last_good_one(setup):
     assert "gateway_routing_reload_errors_total 1.0" in client.get("/metrics").text
 
 
+def test_connection_pool_is_recycled(tmp_path):
+    routing = tmp_path / "routing.yaml"
+    _routing(routing, 0)
+    backends = Backends()
+    for max_age, expected in ((0.0, 3), (3600.0, 0)):
+        app = create_gateway(GatewaySettings(routing_file=routing, connection_max_age=max_age), transport=httpx.MockTransport(backends))
+        with TestClient(app) as client:
+            for _ in range(3):
+                assert client.post("/v1/predict", json=PAYLOAD).status_code == 200
+            assert app.state.pool["generation"] == expected
+
+
 def test_no_routing_is_not_ready(tmp_path):
     app = create_gateway(GatewaySettings(routing_file=tmp_path / "missing.yaml"))
     with TestClient(app) as c:
@@ -158,5 +170,6 @@ def test_breaker_half_open_failure_reopens():
 def test_settings_from_env(monkeypatch):
     monkeypatch.setenv("ROUTING_FILE", "/etc/gateway/routing.yaml")
     monkeypatch.setenv("BREAKER_FAILURES", "9")
+    monkeypatch.setenv("CONNECTION_MAX_AGE_SECONDS", "15")
     s = GatewaySettings.from_env()
-    assert str(s.routing_file) == "/etc/gateway/routing.yaml" and s.breaker_failures == 9
+    assert str(s.routing_file) == "/etc/gateway/routing.yaml" and s.breaker_failures == 9 and s.connection_max_age == 15

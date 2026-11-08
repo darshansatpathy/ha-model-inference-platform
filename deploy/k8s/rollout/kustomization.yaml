@@ -8,4 +8,4 @@ resources:
 images:
   - name: ifp
     newName: ghcr.io/darshansatpathy/ha-model-inference-platform
-    newTag: 0.1.0
+    newTag: 0.1.1

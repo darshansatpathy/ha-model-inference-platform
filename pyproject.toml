@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ha-model-inference-platform"
-version = "0.1.0"
+version = "0.1.1"
 description = "Highly available model serving: canary releases with automated analysis, autoscaling on in-flight requests, SLO burn-rate alerts and dashboards."
 readme = "README.md"
 license = "MIT"

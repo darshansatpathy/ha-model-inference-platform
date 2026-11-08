@@ -15,10 +15,17 @@ Scoring is a pure function of the input, so a request is retried once on the oth
 the chosen one cannot be reached, times out or sheds load (503). A 500 is not retried: it counts
 against the version that produced it. After `breaker_failures` consecutive failures a backend's
 circuit opens for `breaker_cooldown` seconds and its traffic goes to the other backend.
+
+Upstream connections are kept alive for speed, but a busy keep-alive connection never closes,
+so it stays pinned to whichever pod the Service picked when it opened: pods added by the
+autoscaler would get no traffic, and a replaced pod would keep receiving it until it exits.
+The gateway therefore swaps its connection pool every `connection_max_age` seconds; the old
+pool closes once its in-flight requests have finished.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import random
@@ -47,6 +54,7 @@ class GatewaySettings:
     breaker_failures: int = 5
     breaker_cooldown: float = 10.0
     reload_interval: float = 1.0
+    connection_max_age: float = 30.0
 
     @classmethod
     def from_env(cls) -> GatewaySettings:
@@ -56,6 +64,7 @@ class GatewaySettings:
             timeout_seconds=float(e.get("UPSTREAM_TIMEOUT_SECONDS", "2")),
             breaker_failures=int(e.get("BREAKER_FAILURES", "5")),
             breaker_cooldown=float(e.get("BREAKER_COOLDOWN_SECONDS", "10")),
+            connection_max_age=float(e.get("CONNECTION_MAX_AGE_SECONDS", "30")),
         )
 
 
@@ -164,14 +173,39 @@ def create_gateway(settings: GatewaySettings | None = None, transport: httpx.Asy
         st.routing, st.error = r, None
         weight.set(r.canary_weight)
 
+    def new_client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=s.timeout_seconds, transport=transport, limits=httpx.Limits(max_connections=200))
+
+    pool = {"created": 0.0, "generation": 0}
+    retiring: set[asyncio.Task[None]] = set()
+
+    async def close_later(old: httpx.AsyncClient) -> None:
+        await asyncio.sleep(s.timeout_seconds + 1)  # every request on it has finished or timed out
+        await old.aclose()
+
+    def current_client() -> httpx.AsyncClient:
+        now = time.monotonic()
+        if now - pool["created"] >= s.connection_max_age:
+            old = client.get("c")
+            client["c"], pool["created"] = new_client(), now
+            pool["generation"] += 1
+            if old is not None:
+                task = asyncio.get_running_loop().create_task(close_later(old))
+                retiring.add(task)
+                task.add_done_callback(retiring.discard)
+        return client["c"]
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        client["c"] = httpx.AsyncClient(timeout=s.timeout_seconds, transport=transport, limits=httpx.Limits(max_connections=200))
+        client["c"], pool["created"] = new_client(), time.monotonic()
         reload(time.monotonic())
         yield
+        for task in list(retiring):
+            task.cancel()
         await client["c"].aclose()
 
     app = FastAPI(title="Inference gateway", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app.state.pool = pool
 
     def choose(req: Request, r: Routing, now: float) -> list[str]:
         force = req.headers.get("x-canary", "").lower()
@@ -191,7 +225,7 @@ def create_gateway(settings: GatewaySettings | None = None, transport: httpx.Asy
     async def attempt(backend: str, url: str, body: bytes, headers: dict[str, str]) -> tuple[str, httpx.Response | None]:
         start = time.perf_counter()
         try:
-            resp = await client["c"].post(url + "/v1/predict", content=body, headers=headers)
+            resp = await current_client().post(url + "/v1/predict", content=body, headers=headers)
             code = str(resp.status_code)
         except httpx.TimeoutException:
             resp, code = None, "504"

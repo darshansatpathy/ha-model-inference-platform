@@ -4,6 +4,15 @@ All notable changes are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-11-08
+
+### Fixed
+
+- The gateway recycles its upstream connection pool every 30 s (`CONNECTION_MAX_AGE_SECONDS`). Busy keep-alive
+  connections stayed pinned to the pods they first reached, so pods added by the autoscaler got no traffic and a
+  replaced canary pod kept serving until it exited. Found by the end-to-end run on kind.
+- The end-to-end script waits for replaced pods to finish terminating before it measures a canary.
+
 ## [0.1.0] - 2026-11-08
 
 ### Added

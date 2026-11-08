@@ -14,6 +14,14 @@ step() { printf '\n== %s\n' "$*"; }
 
 rollout_wait() {
   for d in "$@"; do kubectl -n "$NS" rollout status "deploy/$d" --timeout=240s; done
+  # A replaced pod keeps serving through its preStop wait; measure only once it has gone.
+  for _ in $(seq 1 90); do
+    terminating=$(kubectl -n "$NS" get pods -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name}{" "}{end}')
+    [ -z "$terminating" ] && return 0
+    sleep 1
+  done
+  echo "pods still terminating: $terminating" >&2
+  return 1
 }
 
 forward() {
@@ -73,7 +81,8 @@ version=$(kubectl -n "$NS" get deploy/model-stable -o jsonpath='{.spec.template.
 [ "$version" = "v2" ] || { echo "stable runs $version after promotion" >&2; exit 1; }
 
 step "stable now answers with v2"
-sleep 15
+rollout_wait model-stable
+sleep 2
 curl -fsS -X POST "$GW/v1/predict" -H 'content-type: application/json' -H 'x-canary: never' \
   -d "$(python -c 'import json; from inferplat.loadtest import instances; print(json.dumps({"instances": instances(__import__("pathlib").Path("models"), n=1)}))')" \
   | tee "$LOGS/after-promotion.json" | grep -q '"version":"v2"'
