@@ -5,6 +5,9 @@
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+> Reference implementation built on synthetic or public data. It distils patterns from production
+> work into code you can run and read; it is not a client system.
+
 Serving a model is the easy part. Keeping it answering while pods die, nodes drain, traffic spikes
 and a new model version turns out to be worse than the old one is the platform's job. This
 repository is that platform, small enough to read and tested the way it would be operated:
